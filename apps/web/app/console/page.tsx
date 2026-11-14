@@ -68,8 +68,8 @@ export default function ConsolePage() {
         <div className="brand-mark">INTERFACE</div>
         <h1 style={{ margin: 0 }}>Voice + Text Console</h1>
         <p className="muted">
-          Natural-language commands route through the Central Brain. Voice path accepts STT
-          transcripts (Whisper hook) and TTS reply hooks.
+          Exact commands still work (`list leads`, `intent:finance_summary`). Other messages use
+          the Setup Wizard LLM for natural replies. Voice path accepts STT transcripts (Whisper hook).
         </p>
         {sessionId ? <span className="badge">session {sessionId.slice(0, 8)}</span> : null}
         <div
@@ -83,7 +83,9 @@ export default function ConsolePage() {
             whiteSpace: "pre-wrap",
           }}
         >
-          {log.length ? log.join("\n") : "Try: list leads · book shipment · finance summary · owner otp"}
+          {log.length
+            ? log.join("\n")
+            : "Try: Hello · How many leads today? · System status · list leads · finance summary"}
         </div>
         <form className="stack" onSubmit={send}>
           <div className="field">
