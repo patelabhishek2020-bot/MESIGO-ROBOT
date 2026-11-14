@@ -14,6 +14,31 @@ from app.services.settings_store import get_setting
 
 logger = get_logger("llm")
 
+# Provider error bodies often echo partial API keys — never return those to clients.
+_SECRET_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_\-]{6,}", re.I),
+    re.compile(r"sk-[A-Za-z0-9_\*]{6,}", re.I),
+    re.compile(r"key-[A-Za-z0-9_\-]{8,}", re.I),
+    re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.I),
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Strip API-key-like tokens from provider/error text before returning to clients."""
+    if not text:
+        return ""
+    out = str(text)
+    for pat in _SECRET_PATTERNS:
+        out = pat.sub("[REDACTED]", out)
+    # Collapse OpenAI-style "Incorrect API key provided: …" leftovers
+    out = re.sub(
+        r"(Incorrect API key provided:)[^\".\n]+",
+        r"\1 [REDACTED]",
+        out,
+        flags=re.I,
+    )
+    return out
+
 
 async def get_llm_config(db: AsyncSession) -> dict[str, Optional[str]]:
     provider = (await get_setting(db, "llm", "provider") or "openai").strip().lower()
@@ -116,13 +141,15 @@ async def _openai_compatible(
     async with httpx.AsyncClient(timeout=60.0) as client:
         res = await client.post(endpoint, headers=headers, json=body)
         if res.status_code >= 400:
-            # Do not leak key; surface provider message briefly
-            detail = res.text[:400]
+            # Never echo provider bodies (they often include partial API keys).
             logger.warning("llm_bad_status", status=res.status_code, provider=cfg.get("provider"))
+            hint = "Invalid API key" if res.status_code in (401, 403) else "Check Wizard LLM settings"
             return {
                 "success": False,
                 "error": f"status_{res.status_code}",
-                "content": f"LLM provider returned {res.status_code}. Check Wizard LLM settings. {detail}",
+                "content": redact_secrets(
+                    f"LLM provider returned {res.status_code}. {hint}."
+                ),
             }
         data = res.json()
         content = (
@@ -130,7 +157,7 @@ async def _openai_compatible(
             .get("message", {})
             .get("content", "")
         )
-        return {"success": True, "content": (content or "").strip(), "raw": data}
+        return {"success": True, "content": redact_secrets((content or "").strip()), "raw": data}
 
 
 async def _anthropic_messages(
@@ -162,10 +189,11 @@ async def _anthropic_messages(
     async with httpx.AsyncClient(timeout=60.0) as client:
         res = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
         if res.status_code >= 400:
+            hint = "Invalid API key" if res.status_code in (401, 403) else "Check Wizard LLM settings"
             return {
                 "success": False,
                 "error": f"status_{res.status_code}",
-                "content": f"Anthropic returned {res.status_code}. Check Wizard LLM settings.",
+                "content": redact_secrets(f"Anthropic returned {res.status_code}. {hint}."),
             }
         data = res.json()
         parts = data.get("content") or []
