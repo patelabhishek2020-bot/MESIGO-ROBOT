@@ -57,7 +57,7 @@ class EmailSettingsStep(BaseModel):
     smtp_host: str
     smtp_port: int = 587
     smtp_user: str
-    smtp_password: str
+    smtp_password: Optional[str] = None  # optional when keeping existing masked value
     from_email: EmailStr
     from_name: Optional[str] = None
     use_tls: bool = True
@@ -94,7 +94,7 @@ class BankingLogisticsStep(BaseModel):
 
 class LlmSettingsStep(BaseModel):
     provider: str = "openai"  # openai|anthropic|azure|custom
-    api_key: str
+    api_key: Optional[str] = None  # optional when keeping existing masked value
     model: str = "gpt-4o"
     base_url: Optional[str] = None
 
