@@ -128,6 +128,10 @@ docker-compose.yml VPS stack
 .env.example       Infrastructure-only template
 ```
 
+## Hostinger deploy
+
+See [`docs/hostinger-deploy.md`](docs/hostinger-deploy.md). SSH bootstrap helper: `scripts/vps-bootstrap.sh` (requires `MESIGO_VPS_HOST` + `MESIGO_VPS_USER`; will not run without them).
+
 ## Next build phases
 
 Live provider SDKs (full Twilio/SMTP/social publish), Whisper model worker, and container swap automation for self-update deploys.
