@@ -70,7 +70,7 @@ export default function BrainPage() {
                   <strong>{a.name}</strong>
                   <div className="muted">{a.description}</div>
                 </div>
-                <span className="badge stub">{a.status}</span>
+                <span className={`badge ${a.status === "ready" ? "ok" : "stub"}`}>{a.status}</span>
               </div>
             ))}
           </div>

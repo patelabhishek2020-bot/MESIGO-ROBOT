@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api import auth, brain, system, wizard
+from app.api import agents, approvals, audit, auth, brain, interface, monitor, system, wizard
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import get_logger, setup_logging
@@ -59,6 +59,11 @@ app.include_router(system.router)
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(wizard.router, prefix="/api/v1")
 app.include_router(brain.router, prefix="/api/v1")
+app.include_router(agents.router, prefix="/api/v1")
+app.include_router(approvals.router, prefix="/api/v1")
+app.include_router(interface.router, prefix="/api/v1")
+app.include_router(monitor.router, prefix="/api/v1")
+app.include_router(audit.router, prefix="/api/v1")
 
 
 @app.get("/")

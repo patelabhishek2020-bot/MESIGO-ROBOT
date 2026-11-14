@@ -16,6 +16,7 @@ class RouteRequest(BaseModel):
     intent: str = Field(min_length=1, max_length=128)
     payload: dict[str, Any] = Field(default_factory=dict)
     preferred_agent: Optional[str] = None
+    force_execute: bool = False
 
 
 @router.get("/status")
@@ -37,4 +38,5 @@ async def route(body: RouteRequest, db: DbSession, user: CurrentUser):
         actor_user_id=user.id,
         actor_username=user.username,
         preferred_agent=body.preferred_agent,
+        force_execute=body.force_execute and user.is_owner,
     )

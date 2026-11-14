@@ -97,7 +97,7 @@ export default function DashboardPage() {
 
         <div className="panel">
           <h2>Agent registry</h2>
-          <p className="muted">Agents 2–12 are foundation stubs. Central Brain is online.</p>
+          <p className="muted">Agents 2–12 are live modules. Side effects queue for owner OTP approval.</p>
           <div className="agent-list">
             <div className="agent-item">
               <div>
@@ -114,7 +114,7 @@ export default function DashboardPage() {
                   </strong>
                   <div className="muted mono">{agent.agent_id}</div>
                 </div>
-                <span className="badge stub">{agent.status}</span>
+                <span className={`badge ${agent.status === "ready" ? "ok" : "stub"}`}>{agent.status}</span>
               </div>
             ))}
           </div>

@@ -8,6 +8,9 @@ const LINKS = [
   { href: "/dashboard", label: "Overview" },
   { href: "/wizard", label: "Setup Wizard" },
   { href: "/brain", label: "Central Brain" },
+  { href: "/console", label: "Voice / Text" },
+  { href: "/approvals", label: "Approvals" },
+  { href: "/agents", label: "Agents 2–12" },
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {

@@ -20,18 +20,20 @@ Fully autonomous 24/7 **Import-Export Business Operating System**. After Setup W
 
 | # | Agent | Status |
 |---|--------|--------|
-| 1 | Central AI Brain (Master Orchestrator) | Foundation ready |
-| 2 | Lead Generation & CRM | Stub |
-| 3 | Communication | Stub |
-| 4 | Supplier & Rate | Stub |
-| 5 | Logistics & Documentation | Stub |
-| 6 | Finance & Accounting | Stub |
-| 7 | Compliance & Government Rules | Stub |
-| 8 | Document Vault | Stub |
-| 9 | HR & Office + Staff Panel | Stub |
-| 10 | Self-Development | Stub |
-| 11 | Graphics & Document Design | Stub |
-| 12 | Social Media Management | Stub |
+| 1 | Central AI Brain (Master Orchestrator) | Ready |
+| 2 | Lead Generation & CRM | Ready |
+| 3 | Communication (Email/WhatsApp/WeChat/Phone + OTP-to-owner) | Ready |
+| 4 | Supplier & Rate | Ready |
+| 5 | Logistics & Documentation | Ready |
+| 6 | Finance & Accounting | Ready |
+| 7 | Compliance & Government Rules | Ready |
+| 8 | Document Vault (AI analysis + expiry alerts) | Ready |
+| 9 | HR & Office + Staff Panel | Ready |
+| 10 | Self-Development (safe test + owner approval before deploy) | Ready |
+| 11 | Graphics & Document Design | Ready |
+| 12 | Social Media Management | Ready |
+
+Side-effect intents are queued as **pending approvals** with OTP-to-owner delivery (Twilio/SMTP when configured; dry-run otherwise). Owner confirms via `/api/v1/approvals/{id}/decide`.
 
 ## Quick start (Docker / Hostinger VPS)
 
@@ -98,6 +100,12 @@ NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
 | GET/POST | `/api/v1/wizard/*` | Setup Wizard steps + reopen/complete |
 | GET | `/api/v1/brain/status` | Orchestrator + agent registry |
 | POST | `/api/v1/brain/route` | Route an intent through the Brain |
+| GET/POST | `/api/v1/agents` | List / invoke agents via Brain |
+| GET/POST | `/api/v1/approvals/*` | Pending approvals + OTP request/verify |
+| POST | `/api/v1/interface/text` | Text command interface |
+| POST | `/api/v1/interface/voice/*` | Voice transcript + audio STT hooks |
+| GET/POST | `/api/v1/monitor/*` | API subscription self-monitoring |
+| GET | `/api/v1/audit/logs` | Audit trail |
 | GET | `/health` | Liveness |
 
 ## Security basics
@@ -120,6 +128,6 @@ docker-compose.yml VPS stack
 .env.example       Infrastructure-only template
 ```
 
-## Next build phases (out of scope here)
+## Next build phases
 
-Full implementations of agents 2–12, Whisper STT/TTS speaker recognition model wiring, self-update pipeline, and production hardening beyond foundation.
+Live provider SDKs (full Twilio/SMTP/social publish), Whisper model worker, and container swap automation for self-update deploys.

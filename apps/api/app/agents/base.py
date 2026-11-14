@@ -12,13 +12,15 @@ class AgentResult:
     data: dict[str, Any] = field(default_factory=dict)
     requires_approval: bool = False
     action_key: Optional[str] = None
+    pending_approval_id: Optional[str] = None
 
 
 class BaseAgent(ABC):
     agent_id: str
     name: str
     description: str
-    status: str = "stub"  # stub|ready|disabled
+    status: str = "ready"  # stub|ready|disabled
+    capabilities: list[str] = []
 
     @abstractmethod
     async def handle(self, intent: str, payload: dict[str, Any], context: dict[str, Any]) -> AgentResult:
@@ -30,4 +32,12 @@ class BaseAgent(ABC):
             "name": self.name,
             "description": self.description,
             "status": self.status,
+            "capabilities": self.capabilities,
         }
+
+    def unsupported(self, intent: str) -> AgentResult:
+        return AgentResult(
+            success=False,
+            message=f"{self.name}: unsupported intent '{intent}'",
+            data={"supported": self.capabilities},
+        )
