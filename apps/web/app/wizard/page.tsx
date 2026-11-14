@@ -12,6 +12,23 @@ type WizardStatus = {
   steps: string[];
 };
 
+type WizardData = {
+  status: WizardStatus;
+  company: Record<string, string | null> | null;
+  products: unknown[];
+  markets: unknown[];
+  emails: Record<string, string>;
+  messaging: Record<string, string>;
+  social: Record<string, string>;
+  banking_logistics: Record<string, string>;
+  llm: Record<string, string>;
+  approval_matrix: { rules: unknown[] };
+  doc_categories: { categories: unknown[] };
+  staff_roles: { roles: unknown[] };
+  owner_phones: { phones: string; primary_phone: string };
+  voice_biometric: { enrollment_phrase: string; label: string };
+};
+
 const STEP_LABELS: Record<string, string> = {
   company: "Company",
   products: "Products",
@@ -28,18 +45,35 @@ const STEP_LABELS: Record<string, string> = {
   voice_biometric: "Voice biometric",
 };
 
+const SECRET_FIELD_HINT =
+  "Masked value means a secret is already saved. Edit to overwrite; leave as-is to keep.";
+
+function cleanFormValues(data: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(data || {})) {
+    if (k.includes("__")) continue;
+    if (v === undefined || v === null) continue;
+    out[k] = String(v);
+  }
+  return out;
+}
+
 export default function WizardPage() {
   const router = useRouter();
   const [status, setStatus] = useState<WizardStatus | null>(null);
+  const [data, setData] = useState<WizardData | null>(null);
   const [step, setStep] = useState("company");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hydrateKey, setHydrateKey] = useState(0);
 
-  async function refresh() {
-    const data = await apiFetch<WizardStatus>("/api/v1/wizard/status");
-    setStatus(data);
-    setStep(data.current_step || "company");
+  async function loadAll() {
+    const payload = await apiFetch<WizardData>("/api/v1/wizard/data");
+    setData(payload);
+    setStatus(payload.status);
+    setStep(payload.status?.current_step || "company");
+    setHydrateKey((k) => k + 1);
   }
 
   useEffect(() => {
@@ -47,7 +81,7 @@ export default function WizardPage() {
       router.replace("/");
       return;
     }
-    refresh().catch((err) => setError(err.message));
+    loadAll().catch((err) => setError(err.message));
   }, [router]);
 
   const chips = useMemo(() => status?.steps || Object.keys(STEP_LABELS), [status]);
@@ -62,7 +96,7 @@ export default function WizardPage() {
         body: JSON.stringify(body),
       });
       setMessage(res.message || "Saved (encrypted where secret).");
-      await refresh();
+      await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
     } finally {
@@ -72,10 +106,11 @@ export default function WizardPage() {
 
   async function reopen() {
     setBusy(true);
+    setError("");
     try {
       await apiFetch("/api/v1/wizard/reopen", { method: "POST", body: "{}" });
-      await refresh();
-      setMessage("Wizard reopened. Existing encrypted settings retained.");
+      await loadAll();
+      setMessage("Wizard reopened — saved fields loaded (secrets masked).");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reopen failed");
     } finally {
@@ -91,7 +126,7 @@ export default function WizardPage() {
         body: "{}",
       });
       setMessage(res.message);
-      await refresh();
+      await loadAll();
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Complete failed");
@@ -99,6 +134,16 @@ export default function WizardPage() {
       setBusy(false);
     }
   }
+
+  const llmDefaults = cleanFormValues({
+    provider: "openai",
+    model: "gpt-4o",
+    ...(data?.llm || {}),
+  });
+  const emailDefaults = cleanFormValues({
+    smtp_port: "587",
+    ...(data?.emails || {}),
+  });
 
   return (
     <Shell>
@@ -109,8 +154,7 @@ export default function WizardPage() {
               <div className="brand-mark">MASTER SETUP</div>
               <h1 style={{ margin: "0.2rem 0" }}>Setup Wizard</h1>
               <p className="muted" style={{ margin: 0 }}>
-                First-launch and reopenable. All credentials encrypt in-system — no owner .env
-                editing.
+                First-launch and reopenable. Saved values load into each step; API keys show masked.
               </p>
             </div>
             <div className="row">
@@ -144,8 +188,11 @@ export default function WizardPage() {
 
         <div className="panel">
           <h2>{STEP_LABELS[step] || step}</h2>
-          {step === "company" && (
+          {!data ? <p className="muted">Loading saved wizard data…</p> : null}
+
+          {data && step === "company" && (
             <StepForm
+              key={`company-${hydrateKey}`}
               busy={busy}
               fields={[
                 ["legal_name", "Legal name", true],
@@ -155,146 +202,241 @@ export default function WizardPage() {
                 ["phone", "Phone"],
                 ["address", "Address"],
               ]}
-              onSubmit={(data) => run("/api/v1/wizard/company", data)}
+              defaults={cleanFormValues((data.company as Record<string, string>) || {})}
+              onSubmit={(form) => run("/api/v1/wizard/company", form)}
             />
           )}
-          {step === "products" && (
+          {data && step === "products" && (
             <SimpleJsonForm
+              key={`products-${hydrateKey}`}
               busy={busy}
               hint='Example: [{"name":"Widget A","hs_code":"8471","is_import":true,"is_export":true}]'
-              defaultValue='[{"name":"Primary Product","sku":"SKU-001","is_import":true,"is_export":true}]'
+              defaultValue={JSON.stringify(
+                data.products?.length
+                  ? data.products
+                  : [{ name: "Primary Product", sku: "SKU-001", is_import: true, is_export: true }],
+                null,
+                2
+              )}
               onSubmit={(products) => run("/api/v1/wizard/products", { products })}
             />
           )}
-          {step === "markets" && (
+          {data && step === "markets" && (
             <SimpleJsonForm
+              key={`markets-${hydrateKey}`}
               busy={busy}
               hint='Example: [{"name":"India","country_code":"IN","currency":"INR","direction":"both"}]'
-              defaultValue='[{"name":"Home market","country_code":"IN","currency":"INR","direction":"both"}]'
+              defaultValue={JSON.stringify(
+                data.markets?.length
+                  ? data.markets
+                  : [{ name: "Home market", country_code: "IN", currency: "INR", direction: "both" }],
+                null,
+                2
+              )}
               onSubmit={(markets) => run("/api/v1/wizard/markets", { markets })}
             />
           )}
-          {step === "emails" && (
-            <StepForm
-              busy={busy}
-              fields={[
-                ["smtp_host", "SMTP host", true],
-                ["smtp_port", "SMTP port", true],
-                ["smtp_user", "SMTP user", true],
-                ["smtp_password", "SMTP password", true],
-                ["from_email", "From email", true],
-                ["from_name", "From name"],
-              ]}
-              defaults={{ smtp_port: "587" }}
-              onSubmit={(data) =>
-                run("/api/v1/wizard/emails", {
-                  ...data,
-                  smtp_port: Number(data.smtp_port || 587),
-                  use_tls: true,
-                })
-              }
-            />
+          {data && step === "emails" && (
+            <>
+              <p className="muted mono">{SECRET_FIELD_HINT}</p>
+              <StepForm
+                key={`emails-${hydrateKey}`}
+                busy={busy}
+                secretFields={["smtp_password"]}
+                fields={[
+                  ["smtp_host", "SMTP host", true],
+                  ["smtp_port", "SMTP port", true],
+                  ["smtp_user", "SMTP user", true],
+                  ["smtp_password", "SMTP password", !emailDefaults.smtp_password],
+                  ["from_email", "From email", true],
+                  ["from_name", "From name"],
+                ]}
+                defaults={emailDefaults}
+                onSubmit={(form) =>
+                  run("/api/v1/wizard/emails", {
+                    ...form,
+                    smtp_port: Number(form.smtp_port || 587),
+                    use_tls: true,
+                  })
+                }
+              />
+            </>
           )}
-          {step === "messaging" && (
-            <StepForm
-              busy={busy}
-              fields={[
-                ["twilio_account_sid", "Twilio Account SID"],
-                ["twilio_auth_token", "Twilio Auth Token"],
-                ["twilio_whatsapp_from", "WhatsApp from"],
-                ["whatsapp_business_token", "WhatsApp Business token"],
-                ["wechat_app_id", "WeChat App ID"],
-                ["wechat_app_secret", "WeChat App Secret"],
-              ]}
-              onSubmit={(data) => run("/api/v1/wizard/messaging", data)}
-            />
+          {data && step === "messaging" && (
+            <>
+              <p className="muted mono">{SECRET_FIELD_HINT}</p>
+              <StepForm
+                key={`messaging-${hydrateKey}`}
+                busy={busy}
+                secretFields={[
+                  "twilio_auth_token",
+                  "whatsapp_business_token",
+                  "wechat_app_secret",
+                ]}
+                fields={[
+                  ["twilio_account_sid", "Twilio Account SID"],
+                  ["twilio_auth_token", "Twilio Auth Token"],
+                  ["twilio_whatsapp_from", "WhatsApp from"],
+                  ["whatsapp_business_token", "WhatsApp Business token"],
+                  ["wechat_app_id", "WeChat App ID"],
+                  ["wechat_app_secret", "WeChat App Secret"],
+                ]}
+                defaults={cleanFormValues(data.messaging || {})}
+                onSubmit={(form) => run("/api/v1/wizard/messaging", form)}
+              />
+            </>
           )}
-          {step === "social" && (
-            <StepForm
-              busy={busy}
-              fields={[
-                ["twitter_api_key", "X/Twitter API key"],
-                ["twitter_api_secret", "X/Twitter API secret"],
-                ["linkedin_access_token", "LinkedIn token"],
-                ["facebook_page_token", "Facebook page token"],
-                ["instagram_access_token", "Instagram token"],
-              ]}
-              onSubmit={(data) => run("/api/v1/wizard/social", data)}
-            />
+          {data && step === "social" && (
+            <>
+              <p className="muted mono">{SECRET_FIELD_HINT}</p>
+              <StepForm
+                key={`social-${hydrateKey}`}
+                busy={busy}
+                secretFields={[
+                  "twitter_api_key",
+                  "twitter_api_secret",
+                  "linkedin_access_token",
+                  "facebook_page_token",
+                  "instagram_access_token",
+                ]}
+                fields={[
+                  ["twitter_api_key", "X/Twitter API key"],
+                  ["twitter_api_secret", "X/Twitter API secret"],
+                  ["linkedin_access_token", "LinkedIn token"],
+                  ["facebook_page_token", "Facebook page token"],
+                  ["instagram_access_token", "Instagram token"],
+                ]}
+                defaults={cleanFormValues(data.social || {})}
+                onSubmit={(form) => run("/api/v1/wizard/social", form)}
+              />
+            </>
           )}
-          {step === "banking_logistics" && (
-            <StepForm
-              busy={busy}
-              fields={[
-                ["primary_bank_name", "Bank name"],
-                ["primary_bank_account", "Bank account"],
-                ["swift_code", "SWIFT"],
-                ["logistics_partner", "Logistics partner"],
-                ["logistics_api_key", "Logistics API key"],
-                ["cha_name", "CHA name"],
-                ["cha_license", "CHA license"],
-                ["cha_contact", "CHA contact"],
-              ]}
-              onSubmit={(data) => run("/api/v1/wizard/banking-logistics", data)}
-            />
+          {data && step === "banking_logistics" && (
+            <>
+              <p className="muted mono">{SECRET_FIELD_HINT}</p>
+              <StepForm
+                key={`banking-${hydrateKey}`}
+                busy={busy}
+                secretFields={["primary_bank_account", "logistics_api_key"]}
+                fields={[
+                  ["primary_bank_name", "Bank name"],
+                  ["primary_bank_account", "Bank account"],
+                  ["swift_code", "SWIFT"],
+                  ["logistics_partner", "Logistics partner"],
+                  ["logistics_api_key", "Logistics API key"],
+                  ["cha_name", "CHA name"],
+                  ["cha_license", "CHA license"],
+                  ["cha_contact", "CHA contact"],
+                ]}
+                defaults={cleanFormValues(data.banking_logistics || {})}
+                onSubmit={(form) => run("/api/v1/wizard/banking-logistics", form)}
+              />
+            </>
           )}
-          {step === "llm" && (
-            <StepForm
-              busy={busy}
-              fields={[
-                ["provider", "Provider", true],
-                ["api_key", "API key", true],
-                ["model", "Model", true],
-                ["base_url", "Base URL"],
-              ]}
-              defaults={{ provider: "openai", model: "gpt-4o" }}
-              onSubmit={(data) => run("/api/v1/wizard/llm", data)}
-            />
+          {data && step === "llm" && (
+            <>
+              <p className="muted mono">{SECRET_FIELD_HINT}</p>
+              <StepForm
+                key={`llm-${hydrateKey}`}
+                busy={busy}
+                secretFields={["api_key"]}
+                fields={[
+                  ["provider", "Provider", true],
+                  ["api_key", "API key", !llmDefaults.api_key],
+                  ["model", "Model", true],
+                  ["base_url", "Base URL"],
+                ]}
+                defaults={llmDefaults}
+                onSubmit={(form) => run("/api/v1/wizard/llm", form)}
+              />
+            </>
           )}
-          {step === "approval_matrix" && (
+          {data && step === "approval_matrix" && (
             <SimpleJsonForm
+              key={`approval-${hydrateKey}`}
               busy={busy}
               hint="Array of approval rules (mode: auto|approval|deny)"
-              defaultValue={`[{"action_key":"send_email","display_name":"Send outbound email","agent_id":"communication","mode":"approval","requires_owner":true},{"action_key":"pay_invoice","display_name":"Pay invoice","agent_id":"finance","mode":"approval","amount_limit":1000,"currency":"USD","requires_owner":true}]`}
+              defaultValue={JSON.stringify(
+                data.approval_matrix?.rules?.length
+                  ? data.approval_matrix.rules
+                  : [
+                      {
+                        action_key: "send_email",
+                        display_name: "Send outbound email",
+                        agent_id: "communication",
+                        mode: "approval",
+                        requires_owner: true,
+                      },
+                    ],
+                null,
+                2
+              )}
               onSubmit={(rules) => run("/api/v1/wizard/approval-matrix", { rules })}
             />
           )}
-          {step === "doc_categories" && (
+          {data && step === "doc_categories" && (
             <SimpleJsonForm
+              key={`docs-${hydrateKey}`}
               busy={busy}
               hint='[{"name":"Contracts","slug":"contracts","description":"Sales contracts"}]'
-              defaultValue='[{"name":"Contracts","slug":"contracts","description":"Sales & purchase contracts"}]'
+              defaultValue={JSON.stringify(
+                data.doc_categories?.categories?.length
+                  ? data.doc_categories.categories
+                  : [{ name: "Contracts", slug: "contracts", description: "Sales & purchase contracts" }],
+                null,
+                2
+              )}
               onSubmit={(categories) => run("/api/v1/wizard/doc-categories", { categories })}
             />
           )}
-          {step === "staff_roles" && (
+          {data && step === "staff_roles" && (
             <SimpleJsonForm
+              key={`roles-${hydrateKey}`}
               busy={busy}
               hint='[{"name":"ops_lead","description":"Ops lead","permissions":{"crm":true}}]'
-              defaultValue='[{"name":"ops_lead","description":"Operations lead","permissions":{"crm":true,"docs":true}}]'
+              defaultValue={JSON.stringify(
+                data.staff_roles?.roles?.length
+                  ? data.staff_roles.roles
+                  : [{ name: "ops_lead", description: "Operations lead", permissions: { crm: true, docs: true } }],
+                null,
+                2
+              )}
               onSubmit={(roles) => run("/api/v1/wizard/staff-roles", { roles })}
             />
           )}
-          {step === "owner_phones" && (
+          {data && step === "owner_phones" && (
             <StepForm
+              key={`phones-${hydrateKey}`}
               busy={busy}
               fields={[
                 ["phones", "Owner phones (comma-separated)", true],
                 ["primary_phone", "Primary phone"],
               ]}
-              onSubmit={(data) =>
+              defaults={{
+                phones: data.owner_phones?.phones || "",
+                primary_phone: data.owner_phones?.primary_phone || "",
+              }}
+              onSubmit={(form) =>
                 run("/api/v1/wizard/owner-phones", {
-                  phones: String(data.phones || "")
+                  phones: String(form.phones || "")
                     .split(",")
                     .map((p) => p.trim())
                     .filter(Boolean),
-                  primary_phone: data.primary_phone || null,
+                  primary_phone: form.primary_phone || null,
                 })
               }
             />
           )}
-          {step === "voice_biometric" && (
-            <VoiceStep busy={busy} onMeta={(phrase) => run("/api/v1/wizard/voice-biometric", phrase)} />
+          {data && step === "voice_biometric" && (
+            <VoiceStep
+              key={`voice-${hydrateKey}`}
+              busy={busy}
+              initialPhrase={
+                data.voice_biometric?.enrollment_phrase ||
+                "Mesigo AI authorize my voice for business operations"
+              }
+              onMeta={(phrase) => run("/api/v1/wizard/voice-biometric", phrase)}
+            />
           )}
         </div>
       </div>
@@ -307,30 +449,50 @@ function StepForm({
   onSubmit,
   busy,
   defaults = {},
+  secretFields = [],
 }: {
   fields: [string, string, boolean?][];
   onSubmit: (data: Record<string, string>) => void;
   busy: boolean;
   defaults?: Record<string, string>;
+  secretFields?: string[];
 }) {
   const [values, setValues] = useState<Record<string, string>>(defaults);
+  useEffect(() => {
+    setValues(defaults);
+  }, [defaults]);
+
   function handle(e: FormEvent) {
     e.preventDefault();
     onSubmit(values);
   }
   return (
     <form className="stack" onSubmit={handle}>
-      {fields.map(([key, label, required]) => (
-        <div className="field" key={key}>
-          <label htmlFor={key}>{label}</label>
-          <input
-            id={key}
-            required={!!required}
-            value={values[key] || ""}
-            onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
-          />
-        </div>
-      ))}
+      {fields.map(([key, label, required]) => {
+        const isSecret = secretFields.includes(key);
+        const masked = isSecret && (values[key] || "").includes("…");
+        return (
+          <div className="field" key={key}>
+            <label htmlFor={key}>
+              {label}
+              {masked ? " (saved · masked)" : ""}
+            </label>
+            <input
+              id={key}
+              required={!!required}
+              value={values[key] || ""}
+              autoComplete={isSecret ? "off" : undefined}
+              onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+              onFocus={() => {
+                // If focusing a masked secret, clear so owner can paste a new key
+                if (isSecret && (values[key] || "").includes("…")) {
+                  setValues((v) => ({ ...v, [key]: "" }));
+                }
+              }}
+            />
+          </div>
+        );
+      })}
       <button className="btn primary" type="submit" disabled={busy}>
         Save step
       </button>
@@ -351,6 +513,9 @@ function SimpleJsonForm({
 }) {
   const [text, setText] = useState(defaultValue);
   const [localError, setLocalError] = useState("");
+  useEffect(() => {
+    setText(defaultValue);
+  }, [defaultValue]);
   function handle(e: FormEvent) {
     e.preventDefault();
     try {
@@ -379,14 +544,20 @@ function SimpleJsonForm({
 function VoiceStep({
   busy,
   onMeta,
+  initialPhrase,
 }: {
   busy: boolean;
   onMeta: (body: { enrollment_phrase: string; label: string }) => void;
+  initialPhrase: string;
 }) {
-  const [phrase, setPhrase] = useState("Mesigo AI authorize my voice for business operations");
+  const [phrase, setPhrase] = useState(initialPhrase);
   const [file, setFile] = useState<File | null>(null);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+
+  useEffect(() => {
+    setPhrase(initialPhrase);
+  }, [initialPhrase]);
 
   async function upload() {
     if (!file) {
@@ -407,9 +578,9 @@ function VoiceStep({
           body: fd,
         }
       );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error?.message || "Upload failed");
-      setMsg(data.message || "Voice enrolled");
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error?.message || "Upload failed");
+      setMsg(body.message || "Voice enrolled");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Upload failed");
     }

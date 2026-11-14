@@ -32,9 +32,12 @@ from app.schemas.wizard import (
 )
 from app.services.audit import write_audit
 from app.services.settings_store import (
+    get_setting,
     get_system_state,
+    is_masked_secret,
     list_settings_meta,
     set_system_state,
+    settings_map,
     upsert_setting,
 )
 
@@ -185,6 +188,17 @@ async def step_markets(body: MarketsStep, db: DbSession, user: OwnerUser, reques
     return {"success": True, "count": len(body.markets), "wizard": state}
 
 
+def _is_secret_key(key: str, secret_keys: set[str]) -> bool:
+    return (
+        key in secret_keys
+        or "password" in key
+        or "token" in key
+        or "secret" in key
+        or key.endswith("api_key")
+        or key == "api_key"
+    )
+
+
 async def _store_kv(
     db,
     category: str,
@@ -193,22 +207,34 @@ async def _store_kv(
     user_id,
     secret_keys: set[str] | None = None,
 ):
+    """Persist wizard fields. Skip empty values and masked secret placeholders (keep existing)."""
     secret_keys = secret_keys or set()
     for key, value in data.items():
         if value is None or value == "":
+            continue
+        if isinstance(value, (dict, list)):
+            value = str(value)
+        else:
+            value = str(value)
+        if _is_secret_key(key, secret_keys) and is_masked_secret(value):
             continue
         await upsert_setting(
             db,
             category=category,
             key=key,
-            value=str(value),
-            is_secret=key in secret_keys or "password" in key or "token" in key or "secret" in key or "api_key" in key or "key" in key,
+            value=value,
+            is_secret=_is_secret_key(key, secret_keys),
             updated_by=user_id,
         )
 
 
 @router.post("/emails")
 async def step_emails(body: EmailSettingsStep, db: DbSession, user: OwnerUser, request: Request):
+    existing_pw = await get_setting(db, "email", "smtp_password")
+    incoming = body.smtp_password
+    if not incoming or is_masked_secret(incoming or ""):
+        if not existing_pw:
+            raise MesigoError("SMTP password is required", code="smtp_password_required", status_code=400)
     await _store_kv(
         db,
         "email",
@@ -255,6 +281,11 @@ async def step_banking(body: BankingLogisticsStep, db: DbSession, user: OwnerUse
 
 @router.post("/llm")
 async def step_llm(body: LlmSettingsStep, db: DbSession, user: OwnerUser, request: Request):
+    existing_key = await get_setting(db, "llm", "api_key")
+    incoming = body.api_key
+    if not incoming or is_masked_secret(incoming or ""):
+        if not existing_key:
+            raise MesigoError("LLM API key is required", code="llm_key_required", status_code=400)
     await _store_kv(db, "llm", body.model_dump(), user_id=user.id, secret_keys={"api_key"})
     state = await _mark_step(db, "llm")
     await write_audit(db, action="wizard.llm", actor_user_id=user.id, actor_username=user.username, **client_meta(request))
@@ -443,3 +474,146 @@ async def complete_wizard(db: DbSession, user: OwnerUser, request: Request):
 async def settings_meta(db: DbSession, user: OwnerUser, category: str | None = None):
     """List encrypted settings metadata (secrets masked)."""
     return {"settings": await list_settings_meta(db, category)}
+
+
+@router.get("/data")
+async def wizard_data(db: DbSession, user: OwnerUser):
+    """
+    Full wizard hydration payload for reopen / refresh.
+    Secrets are masked (e.g. sk-…xxxx); non-secrets returned plaintext.
+    """
+    company = (
+        await db.execute(select(Company).where(Company.is_active.is_(True)).limit(1))
+    ).scalar_one_or_none()
+    products = []
+    markets = []
+    if company:
+        products = [
+            {
+                "name": p.name,
+                "sku": p.sku,
+                "hs_code": p.hs_code,
+                "category": p.category,
+                "description": p.description,
+                "unit": p.unit,
+                "is_import": p.is_import,
+                "is_export": p.is_export,
+            }
+            for p in (
+                await db.execute(select(Product).where(Product.company_id == company.id).order_by(Product.created_at))
+            ).scalars().all()
+        ]
+        markets = [
+            {
+                "name": m.name,
+                "country_code": m.country_code,
+                "region": m.region,
+                "currency": m.currency,
+                "direction": m.direction,
+                "notes": m.notes,
+            }
+            for m in (
+                await db.execute(select(Market).where(Market.company_id == company.id).order_by(Market.created_at))
+            ).scalars().all()
+        ]
+
+    approval = (
+        await db.execute(select(ApprovalRule).where(ApprovalRule.is_active.is_(True)).order_by(ApprovalRule.action_key))
+    ).scalars().all()
+    categories = (
+        await db.execute(select(DocumentCategory).order_by(DocumentCategory.name))
+    ).scalars().all()
+    roles = (await db.execute(select(Role).order_by(Role.name))).scalars().all()
+
+    email = await settings_map(db, "email")
+    messaging = await settings_map(db, "messaging")
+    social = await settings_map(db, "social")
+    banking = await settings_map(db, "banking_logistics")
+    llm = await settings_map(db, "llm")
+    owner_phones = await settings_map(db, "owner_phones")
+    voice = await settings_map(db, "voice")
+
+    phones_raw = owner_phones.get("phones") or ""
+    # phones stored encrypted → masked as prefix…suffix; for display of CSV we decrypt via get_setting
+    phones_plain = await get_setting(db, "owner_phones", "phones")
+    primary_plain = await get_setting(db, "owner_phones", "primary_phone")
+
+    state = await _wizard_state(db)
+    return {
+        "status": {
+            "completed": bool(state.get("completed")),
+            "current_step": state.get("current_step", "company"),
+            "completed_steps": state.get("completed_steps") or [],
+            "steps": WIZARD_STEPS,
+        },
+        "company": (
+            {
+                "legal_name": company.legal_name,
+                "trade_name": company.trade_name,
+                "registration_number": company.registration_number,
+                "tax_id": company.tax_id,
+                "country": company.country,
+                "address": company.address,
+                "website": company.website,
+                "phone": company.phone,
+                "email": company.email,
+            }
+            if company
+            else None
+        ),
+        "products": products,
+        "markets": markets,
+        "emails": email,
+        "messaging": messaging,
+        "social": social,
+        "banking_logistics": banking,
+        "llm": llm,
+        "approval_matrix": {
+            "rules": [
+                {
+                    "action_key": r.action_key,
+                    "display_name": r.display_name,
+                    "agent_id": r.agent_id,
+                    "mode": r.mode,
+                    "amount_limit": float(r.amount_limit) if r.amount_limit is not None else None,
+                    "currency": r.currency,
+                    "requires_owner": r.requires_owner,
+                }
+                for r in approval
+            ]
+        },
+        "doc_categories": {
+            "categories": [
+                {
+                    "name": c.name,
+                    "slug": c.slug,
+                    "description": c.description,
+                    "retention_days": c.retention_days,
+                }
+                for c in categories
+            ]
+        },
+        "staff_roles": {
+            "roles": [
+                {
+                    "name": r.name,
+                    "description": r.description,
+                    "permissions": r.permissions or {},
+                    "is_system": r.is_system,
+                }
+                for r in roles
+            ]
+        },
+        "owner_phones": {
+            "phones": phones_plain or "",
+            "primary_phone": primary_plain or "",
+            # also expose masked variants for UI hinting if needed
+            "phones_masked": owner_phones.get("phones"),
+            "primary_phone_masked": owner_phones.get("primary_phone"),
+        },
+        "voice_biometric": {
+            "enrollment_phrase": voice.get("enrollment_phrase")
+            or "Mesigo AI authorize my voice for business operations",
+            "label": "primary",
+        },
+    }
