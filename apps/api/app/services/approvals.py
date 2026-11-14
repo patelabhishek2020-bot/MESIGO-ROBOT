@@ -21,6 +21,7 @@ async def create_pending_approval(
     requested_by: Optional[UUID] = None,
     send_otp: bool = True,
     otp_channel: str = "whatsapp",
+    force_otp_dry_run: bool = False,
 ) -> dict[str, Any]:
     approval = PendingApproval(
         action_key=action_key,
@@ -41,6 +42,7 @@ async def create_pending_approval(
             channel=otp_channel,
             related_approval_id=approval.id,
             metadata={"action_key": action_key, "agent_id": agent_id, "intent": intent},
+            force_dry_run=force_otp_dry_run or bool(payload.get("otp_dry_run")),
         )
         if otp_info.get("challenge_id"):
             approval.otp_challenge_id = UUID(otp_info["challenge_id"])

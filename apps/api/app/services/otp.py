@@ -1,7 +1,11 @@
 """OTP-to-owner approval flow."""
 
+import asyncio
 import secrets
+import smtplib
+import ssl
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Any, Optional
 from uuid import UUID
 
@@ -42,10 +46,14 @@ async def create_owner_otp(
     related_approval_id: Optional[UUID] = None,
     ttl_minutes: int = 10,
     metadata: Optional[dict[str, Any]] = None,
+    force_dry_run: bool = False,
 ) -> dict[str, Any]:
     """
-    Generate OTP, store hash, and queue delivery via configured channel.
-    Actual Twilio/SMTP send uses wizard credentials when present; otherwise dry-run.
+    Generate OTP, store hash, and deliver via configured channel.
+    SMTP is attempted when Wizard email settings exist; otherwise dry-run
+    (returns ``dev_code`` so owners/tests can complete the approval loop).
+    Twilio provider hooks stay dry-run until a real SDK send is wired.
+    ``force_dry_run`` skips provider send (used by automated tests).
     """
     destinations = await resolve_owner_destinations(db)
     if channel in ("whatsapp", "sms", "voice"):
@@ -77,7 +85,14 @@ async def create_owner_otp(
     db.add(challenge)
     await db.flush()
 
-    delivery = await _deliver_otp(db, channel=channel, destination=dest, code=code, challenge_id=challenge.id)
+    delivery = await _deliver_otp(
+        db,
+        channel=channel,
+        destination=dest,
+        code=code,
+        challenge_id=challenge.id,
+        force_dry_run=force_dry_run,
+    )
 
     logger.info("otp_created", challenge_id=str(challenge.id), channel=channel, dry_run=delivery.get("dry_run"))
     return {
@@ -87,9 +102,76 @@ async def create_owner_otp(
         "destination_masked": challenge.destination_masked,
         "expires_at": challenge.expires_at.isoformat(),
         "delivery": delivery,
-        # Never return code in production responses — only for dry-run diagnostics
+        # Only return code when delivery was dry-run (no provider send succeeded).
         "dev_code": code if delivery.get("dry_run") else None,
     }
+
+
+def _smtp_send_sync(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    from_email: str,
+    to_email: str,
+    subject: str,
+    body: str,
+    use_tls: bool,
+) -> None:
+    msg = EmailMessage()
+    msg["From"] = from_email
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    if port == 465:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, timeout=30, context=context) as smtp:
+            smtp.login(user, password)
+            smtp.send_message(msg)
+        return
+
+    with smtplib.SMTP(host, port, timeout=30) as smtp:
+        if use_tls or port == 587:
+            context = ssl.create_default_context()
+            smtp.starttls(context=context)
+        smtp.login(user, password)
+        smtp.send_message(msg)
+
+
+async def _try_smtp_deliver(db: AsyncSession, *, destination: str, code: str) -> dict[str, Any]:
+    host = await get_setting(db, "email", "smtp_host")
+    user = await get_setting(db, "email", "smtp_user")
+    password = await get_setting(db, "email", "smtp_password")
+    from_email = await get_setting(db, "email", "from_email")
+    port_raw = await get_setting(db, "email", "smtp_port")
+    use_tls_raw = await get_setting(db, "email", "use_tls")
+    if not host or not user or not password or not from_email:
+        return {"ok": False, "reason": "incomplete_smtp_settings"}
+    try:
+        port = int(port_raw or 587)
+    except (TypeError, ValueError):
+        port = 587
+    use_tls = str(use_tls_raw or "true").lower() in {"1", "true", "yes", "on"}
+    body = f"Mesigo AI owner OTP: {code}. Valid for approval confirmation."
+    try:
+        await asyncio.to_thread(
+            _smtp_send_sync,
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            from_email=from_email,
+            to_email=destination,
+            subject="Mesigo AI OTP",
+            body=body,
+            use_tls=use_tls,
+        )
+        return {"ok": True, "provider_ref": f"smtp:{host}:{port}"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("otp_smtp_failed", error=str(exc)[:200])
+        return {"ok": False, "reason": f"smtp_error:{type(exc).__name__}"}
 
 
 async def _deliver_otp(
@@ -99,25 +181,40 @@ async def _deliver_otp(
     destination: str,
     code: str,
     challenge_id: UUID,
+    force_dry_run: bool = False,
 ) -> dict[str, Any]:
     body = f"Mesigo AI owner OTP: {code}. Valid for approval confirmation."
     twilio_sid = await get_setting(db, "messaging", "twilio_account_sid")
     twilio_token = await get_setting(db, "messaging", "twilio_auth_token")
-    smtp_host = await get_setting(db, "email", "smtp_host")
 
     dry_run = True
     provider_ref = None
     status = "queued_dry_run"
+    delivery_note = None
 
-    if channel in ("whatsapp", "sms", "voice") and twilio_sid and twilio_token:
-        # Real Twilio call deferred to provider SDK; mark ready-to-send
-        dry_run = False
-        status = "queued_provider"
-        provider_ref = f"twilio:{channel}:{challenge_id}"
-    elif channel == "email" and smtp_host:
-        dry_run = False
-        status = "queued_provider"
-        provider_ref = f"smtp:{challenge_id}"
+    if force_dry_run:
+        dry_run = True
+        status = "queued_dry_run"
+        delivery_note = "forced_dry_run"
+        provider_ref = f"dry-run:{challenge_id}"
+    elif channel == "email":
+        sent = await _try_smtp_deliver(db, destination=destination, code=code)
+        if sent.get("ok"):
+            dry_run = False
+            status = "sent"
+            provider_ref = sent.get("provider_ref") or f"smtp:{challenge_id}"
+        else:
+            # Incomplete SMTP or send failure → dry-run so owner/tests can still approve
+            dry_run = True
+            status = "queued_dry_run"
+            delivery_note = sent.get("reason")
+            provider_ref = f"smtp-dry-run:{challenge_id}"
+    elif channel in ("whatsapp", "sms", "voice") and twilio_sid and twilio_token:
+        # Twilio SDK send not wired yet — stay dry-run (do not pretend a message was sent).
+        dry_run = True
+        status = "queued_dry_run"
+        delivery_note = "twilio_sdk_not_wired"
+        provider_ref = f"twilio-dry-run:{channel}:{challenge_id}"
 
     log = MessageLog(
         channel=channel,
@@ -127,11 +224,22 @@ async def _deliver_otp(
         body_preview=body.replace(code, "******"),
         status=status,
         provider_ref=provider_ref,
-        metadata_json={"kind": "otp", "challenge_id": str(challenge_id), "dry_run": dry_run},
+        metadata_json={
+            "kind": "otp",
+            "challenge_id": str(challenge_id),
+            "dry_run": dry_run,
+            "note": delivery_note,
+        },
     )
     db.add(log)
     await db.flush()
-    return {"status": status, "dry_run": dry_run, "message_log_id": str(log.id), "provider_ref": provider_ref}
+    return {
+        "status": status,
+        "dry_run": dry_run,
+        "message_log_id": str(log.id),
+        "provider_ref": provider_ref,
+        "note": delivery_note,
+    }
 
 
 async def verify_otp(db: AsyncSession, challenge_id: UUID, code: str) -> dict[str, Any]:

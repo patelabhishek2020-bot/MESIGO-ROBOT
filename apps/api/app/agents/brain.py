@@ -205,6 +205,7 @@ class CentralBrain:
                 requested_by=actor_user_id,
                 send_otp=True,
                 otp_channel=payload.get("otp_channel", "whatsapp"),
+                force_otp_dry_run=bool(payload.get("otp_dry_run")),
             )
             await write_audit(
                 db,
